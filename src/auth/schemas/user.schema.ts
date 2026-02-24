@@ -13,6 +13,12 @@ export class User {
 
   @Prop()
   name: string;
+
+  @Prop({ type: { dev: Boolean, cs: Boolean }, default: { dev: false, cs: false } })
+  role: { dev: boolean; cs: boolean };
+
+  @Prop({ default: '0' })
+  admin: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);
