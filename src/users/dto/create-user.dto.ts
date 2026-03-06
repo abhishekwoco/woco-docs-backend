@@ -3,5 +3,6 @@ export class CreateUserDto {
   email: string;
   password: string;
   role: { dev: boolean; cs: boolean };
-  admin: string;
+  admin: boolean;
+  write?: { dev: boolean; cs: boolean };
 }

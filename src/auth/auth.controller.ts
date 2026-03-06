@@ -20,7 +20,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Post('logout')
-  logout(@Headers('authorization') token: string) {
+  logout(@Headers('access-token') token: string) {
     return this.authService.logout(token);
   }
 }

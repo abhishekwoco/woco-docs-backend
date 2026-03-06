@@ -28,7 +28,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid email or password');
     }
 
-    const payload = { sub: user._id, email: user.email, name: user.name, role: user.role, admin: user.admin };
+    const payload = { sub: user._id, email: user.email, name: user.name, role: user.role, admin: user.admin, write: user.write };
     const accessToken = this.jwtService.sign(payload);
 
     const expiresAt = new Date();
@@ -48,6 +48,7 @@ export class AuthService {
         name: user.name,
         role: user.role,
         admin: user.admin,
+        write: user.write,
       },
     };
   }
@@ -55,7 +56,7 @@ export class AuthService {
   async me(userId: string) {
     const user = await this.userModel
       .findById(userId)
-      .select('email name role admin')
+      .select('email name role admin write')
       .lean();
 
     if (!user) {
