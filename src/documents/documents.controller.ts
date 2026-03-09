@@ -25,8 +25,10 @@ export class DocumentsController {
   findAll(
     @Query('document_id') documentId?: string,
     @Query('slug') slug?: string,
-    @Query('category') category?: string,
+    @Query('category_id') categoryId?: string,
     @Query('tags') tags?: string,
+    @Query('published') published?: string,
+    @Query('user_id') userId?: string,
   ) {
     // If document_id is provided, fetch that specific document
     if (documentId) {
@@ -39,12 +41,21 @@ export class DocumentsController {
     }
 
     // Apply filters
-    if (category) {
-      return this.documentsService.findByCategory(category);
+    if (categoryId) {
+      return this.documentsService.findByCategoryId(categoryId);
     }
+
     if (tags) {
-      const tagArray = tags.split(',');
+      const tagArray = tags.split(',').map(tag => tag.trim());
       return this.documentsService.findByTags(tagArray);
+    }
+
+    if (published === 'true') {
+      return this.documentsService.findPublished();
+    }
+
+    if (userId) {
+      return this.documentsService.findByUserId(userId);
     }
 
     // Return all documents if no filters
@@ -56,6 +67,12 @@ export class DocumentsController {
   update(@Body() updateDocumentDto: any) {
     const { document_id, ...updateData } = updateDocumentDto;
     return this.documentsService.update(document_id, updateData);
+  }
+
+  @Post('reorder')
+  @UseGuards(WritePermissionGuard)
+  reorder(@Body() reorderDto: { documents: Array<{ id: string; order: number }> }) {
+    return this.documentsService.reorderDocuments(reorderDto.documents);
   }
 
   @Post('delete')
