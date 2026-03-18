@@ -8,7 +8,7 @@ export class Document {
   @Prop({ required: true })
   title: string;
 
-  @Prop({ required: true })
+  @Prop({ default: '' })
   content: string;
 
   @Prop({ required: true, unique: true })

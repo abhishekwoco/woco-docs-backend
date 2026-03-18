@@ -5,7 +5,7 @@ export type CategoryDocument = HydratedDocument<Category>;
 
 @Schema({ collection: 'doc-categories', timestamps: true })
 export class Category {
-  @Prop({ required: true, unique: true })
+  @Prop({ required: true })
   name: string;
 
   @Prop({ required: true, unique: true })
@@ -38,6 +38,7 @@ export const CategorySchema = SchemaFactory.createForClass(Category);
 
 // Create indexes for better query performance
 // Note: slug index is already created by unique: true
+CategorySchema.index({ name: 1, parentId: 1 }, { unique: true });
 CategorySchema.index({ parentId: 1 });
 CategorySchema.index({ order: 1 });
 CategorySchema.index({ persona: 1 });
