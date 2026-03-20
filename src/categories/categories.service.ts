@@ -93,67 +93,95 @@ export class CategoriesService {
   }
 
   async findCategoryTree(): Promise<any[]> {
-    const rootCategories = await this.findRootCategories();
+    // Single query — load all categories, build tree in-memory
+    const allCategories = await this.categoryModel.find().sort({ order: 1 }).exec();
 
-    const buildTree = async (categories: CategoryDocument[]): Promise<any[]> => {
-      const tree: any[] = [];
-      for (const category of categories) {
-        const subcategories = await this.findSubcategories((category as any)._id.toString());
-        tree.push({
-          ...(category as any).toObject(),
-          subcategories: subcategories.length > 0 ? await buildTree(subcategories as CategoryDocument[]) : [],
-        });
+    // Group by parentId
+    const childrenMap = new Map<string, any[]>();
+    const roots: any[] = [];
+
+    for (const cat of allCategories) {
+      const obj = (cat as any).toObject();
+      const parentKey = obj.parentId?.toString() || null;
+      if (!parentKey) {
+        roots.push(obj);
+      } else {
+        if (!childrenMap.has(parentKey)) childrenMap.set(parentKey, []);
+        childrenMap.get(parentKey)!.push(obj);
       }
-      return tree;
-    };
+    }
 
-    return buildTree(rootCategories);
+    const buildTree = (categories: any[]): any[] =>
+      categories.map((cat) => ({
+        ...cat,
+        subcategories: buildTree(childrenMap.get(cat._id.toString()) || []),
+      }));
+
+    return buildTree(roots);
   }
 
   async findSidebarByPersona(persona: string): Promise<any[]> {
-    // Get root categories for the specified persona
-    const rootCategories = await this.categoryModel
-      .find({ parentId: null, persona, isActive: true })
-      .sort({ order: 1 })
-      .exec();
+    // 2 queries total instead of N+1: all categories + all docs for this persona
+    const [allCategories, allDocuments] = await Promise.all([
+      this.categoryModel
+        .find({ persona, isActive: true })
+        .sort({ order: 1 })
+        .exec(),
+      this.documentModel
+        .find({ isPublished: true })
+        .select('_id title slug description order categoryId')
+        .sort({ order: 1 })
+        .exec(),
+    ]);
 
-    const buildTree = async (categories: CategoryDocument[]): Promise<any[]> => {
-      const tree: any[] = [];
-      for (const category of categories) {
-        const subcategories = await this.categoryModel
-          .find({ parentId: (category as any)._id, isActive: true })
-          .sort({ order: 1 })
-          .exec();
+    // Group categories by parentId
+    const childrenMap = new Map<string, any[]>();
+    const roots: any[] = [];
+    const categoryIds = new Set(allCategories.map((c: any) => c._id.toString()));
 
-        // Get documents for this category
-        const documents = await this.documentModel
-          .find({ categoryId: (category as any)._id, isPublished: true })
-          .select('_id title slug description order')
-          .sort({ order: 1 })
-          .exec();
+    for (const cat of allCategories) {
+      const obj = (cat as any).toObject();
+      const parentKey = obj.parentId?.toString() || null;
+      if (!parentKey || !categoryIds.has(parentKey)) {
+        roots.push(obj);
+      } else {
+        if (!childrenMap.has(parentKey)) childrenMap.set(parentKey, []);
+        childrenMap.get(parentKey)!.push(obj);
+      }
+    }
 
-        const categoryObj = (category as any).toObject();
-        tree.push({
-          id: categoryObj._id,
-          name: categoryObj.name,
-          slug: categoryObj.slug,
-          description: categoryObj.description,
-          order: categoryObj.order,
-          persona: categoryObj.persona,
-          documents: documents.map(doc => ({
-            id: (doc as any)._id,
-            title: doc.title,
-            slug: doc.slug,
-            description: doc.description,
-            order: doc.order,
-          })),
-          subcategories: subcategories.length > 0 ? await buildTree(subcategories as CategoryDocument[]) : [],
+    // Group documents by categoryId
+    const docsMap = new Map<string, any[]>();
+    for (const doc of allDocuments) {
+      const catId = (doc as any).categoryId?.toString();
+      if (catId && categoryIds.has(catId)) {
+        if (!docsMap.has(catId)) docsMap.set(catId, []);
+        docsMap.get(catId)!.push({
+          id: (doc as any)._id,
+          title: doc.title,
+          slug: doc.slug,
+          description: doc.description,
+          order: doc.order,
         });
       }
-      return tree;
-    };
+    }
 
-    return buildTree(rootCategories);
+    const buildTree = (categories: any[]): any[] =>
+      categories.map((cat) => {
+        const catId = cat._id.toString();
+        return {
+          id: cat._id,
+          name: cat.name,
+          slug: cat.slug,
+          description: cat.description,
+          order: cat.order,
+          persona: cat.persona,
+          documents: docsMap.get(catId) || [],
+          subcategories: buildTree(childrenMap.get(catId) || []),
+        };
+      });
+
+    return buildTree(roots);
   }
 
   async update(id: string, updateCategoryDto: UpdateCategoryDto): Promise<Category | null> {
@@ -391,15 +419,25 @@ export class CategoriesService {
   }
 
   private async addDocumentCounts(categories: any[]): Promise<any[]> {
-    return Promise.all(
-      categories.map(async (category) => {
-        const categoryObj = category.toObject ? category.toObject() : category;
-        const docCount = await this.getDocumentCount(categoryObj._id.toString());
-        return {
-          ...categoryObj,
-          assignedDocsCount: docCount,
-        };
-      })
-    );
+    // Single aggregation instead of N count queries
+    const categoryIds = categories.map((c) => {
+      const obj = c.toObject ? c.toObject() : c;
+      return obj._id;
+    });
+
+    const counts = await this.documentModel.aggregate([
+      { $match: { categoryId: { $in: categoryIds } } },
+      { $group: { _id: '$categoryId', count: { $sum: 1 } } },
+    ]).exec();
+
+    const countMap = new Map(counts.map((c: any) => [c._id.toString(), c.count]));
+
+    return categories.map((category) => {
+      const categoryObj = category.toObject ? category.toObject() : category;
+      return {
+        ...categoryObj,
+        assignedDocsCount: countMap.get(categoryObj._id.toString()) || 0,
+      };
+    });
   }
 }

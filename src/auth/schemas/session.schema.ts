@@ -16,3 +16,9 @@ export class Session {
 }
 
 export const SessionSchema = SchemaFactory.createForClass(Session);
+
+// Index on token — queried on every authenticated request via TokenAuthGuard
+SessionSchema.index({ token: 1 });
+
+// Index on userId — queried for session lookups by user
+SessionSchema.index({ userId: 1 });

@@ -4,14 +4,17 @@ import {
   Post,
   Body,
   Param,
+  Query,
   UseGuards,
   Req,
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { SkipThrottle } from '@nestjs/throttler';
 import { AiChatService } from './ai-chat.service';
 import { TokenAuthGuard } from '../documents/guards/token-auth.guard';
 import { CreateChatSessionDto, SendMessageDto } from './dto/create-chat.dto';
+import type { AuthenticatedRequest } from '../common/interfaces/authenticated-request';
 
 @Controller('ai-chat')
 @UseGuards(TokenAuthGuard)
@@ -32,22 +35,29 @@ export class AiChatController {
   // ──────────────────────────────────────────────
 
   @Post('sessions/create')
-  createSession(@Req() req: any, @Body() dto: CreateChatSessionDto) {
+  createSession(@Req() req: AuthenticatedRequest, @Body() dto: CreateChatSessionDto) {
     return this.aiChatService.createSession(req.user, dto.title);
   }
 
   @Get('sessions')
-  getUserSessions(@Req() req: any) {
-    return this.aiChatService.getUserSessions(req.user);
+  getUserSessions(
+    @Req() req: AuthenticatedRequest,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    const pagination = page
+      ? { page: Math.max(1, parseInt(page, 10) || 1), limit: Math.min(50, Math.max(1, parseInt(limit || '20', 10))) }
+      : undefined;
+    return this.aiChatService.getUserSessions(req.user, pagination);
   }
 
   @Get('sessions/:id')
-  getSession(@Req() req: any, @Param('id') id: string) {
+  getSession(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
     return this.aiChatService.getSessionById(id, req.user.userId);
   }
 
   @Post('sessions/delete')
-  deleteSession(@Req() req: any, @Body() body: { session_id: string }) {
+  deleteSession(@Req() req: AuthenticatedRequest, @Body() body: { session_id: string }) {
     return this.aiChatService.deleteSession(body.session_id, req.user.userId);
   }
 
@@ -56,9 +66,10 @@ export class AiChatController {
   // Always streams via SSE
   // ──────────────────────────────────────────────
 
+  @SkipThrottle()
   @Post('send')
   async sendMessage(
-    @Req() req: any,
+    @Req() req: AuthenticatedRequest,
     @Res() res: Response,
     @Body() dto: SendMessageDto,
   ) {
@@ -67,6 +78,7 @@ export class AiChatController {
       req.user,
       dto.message,
       res,
+      dto.client_schema,
     );
   }
 
@@ -84,18 +96,32 @@ export class AiChatController {
   // ──────────────────────────────────────────────
 
   @Get('ingestion/status')
-  getIngestionStatus() {
-    return this.aiChatService.getIngestionStatus();
+  getIngestionStatus(@Req() req: AuthenticatedRequest) {
+    return this.aiChatService.getIngestionStatus(req.user.token);
   }
 
+  @SkipThrottle()
   @Post('ingestion/trigger')
-  triggerIngestion(@Req() req: any, @Body() body: { persona?: string }) {
-    const token = req.headers['access-token'];
-    return this.aiChatService.triggerIngestion(body.persona, token);
+  triggerIngestion(@Req() req: AuthenticatedRequest, @Body() body: { persona?: string }) {
+    return this.aiChatService.triggerIngestion(body.persona, req.user.token);
   }
 
   @Post('ingestion/document/:id')
-  ingestDocument(@Param('id') documentId: string) {
-    return this.aiChatService.ingestDocumentById(documentId);
+  ingestDocument(@Req() req: AuthenticatedRequest, @Param('id') documentId: string) {
+    return this.aiChatService.ingestDocumentById(documentId, req.user.token);
+  }
+
+  @Post('ingestion/schema-reference')
+  updateSchemaReference() {
+    return this.aiChatService.updateSchemaReference();
+  }
+
+  // ──────────────────────────────────────────────
+  // DATABASE QUERY TOOL — Client list proxy
+  // ──────────────────────────────────────────────
+
+  @Get('db/clients')
+  getDbClients(@Req() req: AuthenticatedRequest) {
+    return this.aiChatService.getDbClients(req.user.token);
   }
 }

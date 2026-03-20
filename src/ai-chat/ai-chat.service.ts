@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
   ForbiddenException,
   HttpException,
@@ -15,9 +16,11 @@ import {
 } from './schemas/chat-session.schema';
 import { Document, DocumentDocument } from '../documents/schemas/document.schema';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
+import { AuthenticatedUser } from '../common/interfaces/authenticated-request';
 
 @Injectable()
 export class AiChatService {
+  private readonly logger = new Logger(AiChatService.name);
   private readonly orchestraUrl: string;
 
   constructor(
@@ -38,7 +41,7 @@ export class AiChatService {
    * If user has both cs and dev, defaults to 'cs'.
    * Throws ForbiddenException if user has no persona assigned.
    */
-  private resolvePersona(userRole: { dev: boolean; cs: boolean }): string {
+  private resolvePersona(userRole: AuthenticatedUser['role']): string {
     if (userRole.cs) return 'cs';
     if (userRole.dev) return 'dev';
     throw new ForbiddenException('User has no persona assigned for AI chat access');
@@ -47,7 +50,7 @@ export class AiChatService {
   /**
    * Returns all personas the user has access to.
    */
-  private getAllowedPersonas(userRole: { dev: boolean; cs: boolean }): string[] {
+  private getAllowedPersonas(userRole: AuthenticatedUser['role']): string[] {
     const personas: string[] = [];
     if (userRole.cs) personas.push('cs');
     if (userRole.dev) personas.push('dev');
@@ -60,7 +63,10 @@ export class AiChatService {
 
   async getHealth() {
     try {
-      const response = await fetch(`${this.orchestraUrl}/health`);
+      this.logger.log('Checking Orchestra health');
+      const response = await fetch(`${this.orchestraUrl}/health`, {
+        signal: AbortSignal.timeout(10_000),
+      });
 
       if (!response.ok) {
         return { status: 'degraded', nestjs: 'ok', orchestra: 'unavailable' };
@@ -72,7 +78,8 @@ export class AiChatService {
         nestjs: 'ok',
         orchestra: orchestraHealth,
       };
-    } catch {
+    } catch (err) {
+      this.logger.warn(`Orchestra health check failed: ${(err as Error).message}`);
       return { status: 'degraded', nestjs: 'ok', orchestra: 'unavailable' };
     }
   }
@@ -81,7 +88,7 @@ export class AiChatService {
   // CHAT SESSION MANAGEMENT
   // ──────────────────────────────────────────────
 
-  async createSession(user: any, title?: string): Promise<ChatSession> {
+  async createSession(user: AuthenticatedUser, title?: string): Promise<ChatSession> {
     const persona = this.resolvePersona(user.role);
     const session = new this.chatSessionModel({
       userId: user.userId,
@@ -92,14 +99,33 @@ export class AiChatService {
     return session.save();
   }
 
-  async getUserSessions(user: any): Promise<ChatSession[]> {
+  async getUserSessions(user: AuthenticatedUser, pagination?: { page: number; limit: number }) {
     const allowedPersonas = this.getAllowedPersonas(user.role);
+    const filter = { userId: user.userId, isActive: true, persona: { $in: allowedPersonas } };
 
-    return this.chatSessionModel
-      .find({ userId: user.userId, isActive: true, persona: { $in: allowedPersonas } })
+    const query = this.chatSessionModel
+      .find(filter)
       .select('_id title persona createdAt updatedAt')
-      .sort({ updatedAt: -1 })
-      .exec();
+      .sort({ updatedAt: -1 });
+
+    if (!pagination) {
+      return query.exec();
+    }
+
+    const { page, limit } = pagination;
+    const skip = (page - 1) * limit;
+    const [data, total] = await Promise.all([
+      query.skip(skip).limit(limit).exec(),
+      this.chatSessionModel.countDocuments(filter).exec(),
+    ]);
+
+    return {
+      data,
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async getSessionById(sessionId: string, userId: string): Promise<ChatSession> {
@@ -132,7 +158,7 @@ export class AiChatService {
   // CHAT MESSAGING — proxy to Python Orchestra
   // ──────────────────────────────────────────────
 
-  private async getOrCreateSession(sessionId: string | undefined, user: any) {
+  private async getOrCreateSession(sessionId: string | undefined, user: AuthenticatedUser) {
     if (sessionId) {
       const session = await this.chatSessionModel
         .findOne({ _id: sessionId, userId: user.userId, isActive: true })
@@ -154,7 +180,8 @@ export class AiChatService {
     return session.save();
   }
 
-  async sendMessage(sessionId: string | undefined, user: any, message: string, res: Response) {
+  async sendMessage(sessionId: string | undefined, user: AuthenticatedUser, message: string, res: Response, clientSchema?: string) {
+    this.logger.log(`sendMessage user=${user.userId} session=${sessionId || 'new'}`);
     const session = await this.getOrCreateSession(sessionId, user);
 
     session.messages.push({
@@ -189,7 +216,9 @@ export class AiChatService {
             role: m.role,
             content: m.content,
           })),
+          ...(clientSchema ? { client_schema: clientSchema } : {}),
         }),
+        signal: AbortSignal.timeout(300_000), // 5min for LLM streaming
       });
 
       if (!response.ok || !response.body) {
@@ -200,47 +229,59 @@ export class AiChatService {
 
       let fullAnswer = '';
       let sources: any[] = [];
+      let streamError = false;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        const text = decoder.decode(value, { stream: true });
-        res.write(text);
+          const text = decoder.decode(value, { stream: true });
+          res.write(text);
 
-        const lines = text.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              if (data.type === 'token') {
-                fullAnswer += data.content;
-              } else if (data.type === 'sources') {
-                sources = data.sources || [];
+          const lines = text.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.type === 'token') {
+                  fullAnswer += data.content;
+                } else if (data.type === 'sources') {
+                  sources = data.sources || [];
+                }
+              } catch {
+                // skip malformed lines
               }
-            } catch {
-              // skip malformed lines
             }
           }
         }
+      } catch (streamErr) {
+        streamError = true;
+        this.logger.warn(`Stream interrupted for session=${sessionIdResolved}: ${(streamErr as Error).message}`);
+        res.write(`data: ${JSON.stringify({ type: 'error', content: 'Stream interrupted — partial response saved' })}\n\n`);
       }
 
-      session.messages.push({
-        role: 'assistant',
-        content: fullAnswer,
-        sources,
-        timestamp: new Date(),
-      });
+      // Always persist the assistant response, even if partial
+      if (fullAnswer.length > 0) {
+        session.messages.push({
+          role: 'assistant',
+          content: fullAnswer + (streamError ? '\n\n*(Response was interrupted)*' : ''),
+          sources,
+          timestamp: new Date(),
+        });
 
-      if (session.messages.length === 2 && session.title === 'New Chat') {
-        session.title = message.substring(0, 60) + (message.length > 60 ? '...' : '');
+        if (session.messages.length === 2 && session.title === 'New Chat') {
+          session.title = message.substring(0, 60) + (message.length > 60 ? '...' : '');
+        }
+
+        await session.save();
       }
 
-      await session.save();
       res.end();
-    } catch {
+    } catch (err) {
+      this.logger.error(`sendMessage failed for session=${sessionIdResolved}: ${(err as Error).message}`);
       res.write(`data: ${JSON.stringify({ type: 'error', content: 'Failed to connect to Orchestra gateway' })}\n\n`);
       res.end();
     }
@@ -293,9 +334,12 @@ export class AiChatService {
   // INGESTION MANAGEMENT
   // ──────────────────────────────────────────────
 
-  async getIngestionStatus() {
+  async getIngestionStatus(token?: string) {
     try {
-      const response = await fetch(`${this.orchestraUrl}/api/ingestion/status`);
+      const response = await fetch(`${this.orchestraUrl}/api/ingestion/status`, {
+        headers: { ...(token ? { 'access-token': token } : {}) },
+        signal: AbortSignal.timeout(10_000),
+      });
 
       if (!response.ok) {
         return { status: 'unavailable', message: 'Orchestra gateway not reachable' };
@@ -308,11 +352,16 @@ export class AiChatService {
   }
 
   async triggerIngestion(persona?: string, token?: string) {
+    this.logger.log(`triggerIngestion persona=${persona || 'all'}`);
     try {
       const response = await fetch(`${this.orchestraUrl}/api/ingestion/trigger`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'access-token': token } : {}),
+        },
         body: JSON.stringify({ persona, token }),
+        signal: AbortSignal.timeout(600_000), // 10min for bulk ingestion (one-by-one embedding is slow)
       });
 
       if (!response.ok) {
@@ -326,7 +375,8 @@ export class AiChatService {
     }
   }
 
-  async ingestDocumentById(documentId: string) {
+  async ingestDocumentById(documentId: string, token?: string) {
+    this.logger.log(`ingestDocumentById id=${documentId}`);
     const doc: any = await this.documentModel.findById(documentId).exec();
 
     if (!doc) {
@@ -349,7 +399,10 @@ export class AiChatService {
     try {
       const response = await fetch(`${this.orchestraUrl}/api/ingestion/document`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'access-token': token } : {}),
+        },
         body: JSON.stringify({
           id: doc._id.toString(),
           title: doc.title,
@@ -360,10 +413,56 @@ export class AiChatService {
           category,
           updatedAt: doc.updatedAt,
         }),
+        signal: AbortSignal.timeout(180_000), // 3min for single doc (embedding model may cold start)
       });
 
       if (!response.ok) {
         throw new HttpException('Failed to ingest document in Orchestra', HttpStatus.BAD_GATEWAY);
+      }
+
+      return await response.json();
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException('Orchestra gateway not reachable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // SCHEMA REFERENCE — proxy to Orchestra
+  // ──────────────────────────────────────────────
+
+  async updateSchemaReference() {
+    this.logger.log('Updating schema reference from live database');
+    try {
+      const response = await fetch(`${this.orchestraUrl}/api/ingestion/schema-reference`, {
+        method: 'POST',
+        signal: AbortSignal.timeout(120_000), // 2min — introspects all tables
+      });
+
+      if (!response.ok) {
+        throw new HttpException('Failed to update schema reference', HttpStatus.BAD_GATEWAY);
+      }
+
+      return await response.json();
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException('Orchestra gateway not reachable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // DATABASE QUERY TOOL — proxy to Orchestra
+  // ──────────────────────────────────────────────
+
+  async getDbClients(token?: string) {
+    try {
+      const response = await fetch(`${this.orchestraUrl}/api/db/clients`, {
+        headers: { ...(token ? { 'access-token': token } : {}) },
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!response.ok) {
+        throw new HttpException('Failed to fetch clients', HttpStatus.BAD_GATEWAY);
       }
 
       return await response.json();
