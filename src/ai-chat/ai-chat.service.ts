@@ -184,6 +184,7 @@ export class AiChatService {
           session_id: sessionIdResolved,
           message,
           persona: session.persona,
+          user_roles: this.getAllowedPersonas(user.role),
           history: session.messages.slice(-10).map((m) => ({
             role: m.role,
             content: m.content,
@@ -306,12 +307,12 @@ export class AiChatService {
     }
   }
 
-  async triggerIngestion(persona?: string) {
+  async triggerIngestion(persona?: string, token?: string) {
     try {
       const response = await fetch(`${this.orchestraUrl}/api/ingestion/trigger`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ persona }),
+        body: JSON.stringify({ persona, token }),
       });
 
       if (!response.ok) {

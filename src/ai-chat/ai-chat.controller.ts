@@ -89,8 +89,9 @@ export class AiChatController {
   }
 
   @Post('ingestion/trigger')
-  triggerIngestion(@Body() body: { persona?: string }) {
-    return this.aiChatService.triggerIngestion(body.persona);
+  triggerIngestion(@Req() req: any, @Body() body: { persona?: string }) {
+    const token = req.headers['access-token'];
+    return this.aiChatService.triggerIngestion(body.persona, token);
   }
 
   @Post('ingestion/document/:id')
