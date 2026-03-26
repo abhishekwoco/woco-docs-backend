@@ -19,7 +19,9 @@ async function bootstrap() {
     credentials: true,
   });
 
-  await app.listen(process.env.PORT ?? 3000);
+  // await app.listen(process.env.PORT ?? 3000);
+  await app.listen(3000, '10.10.26.130'); // use this only when hosting on local network
+
   console.log(`Application is running on port: ${process.env.PORT}`);
 }
 bootstrap();

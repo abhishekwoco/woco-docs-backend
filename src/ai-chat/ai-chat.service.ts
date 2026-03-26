@@ -14,6 +14,7 @@ import {
   ChatSession,
   ChatSessionDocument,
 } from './schemas/chat-session.schema';
+import { ChatFeedback, ChatFeedbackDocument } from './schemas/chat-feedback.schema';
 import { Document, DocumentDocument } from '../documents/schemas/document.schema';
 import { Category, CategoryDocument } from '../categories/schemas/category.schema';
 import { AuthenticatedUser } from '../common/interfaces/authenticated-request';
@@ -25,6 +26,7 @@ export class AiChatService {
 
   constructor(
     @InjectModel(ChatSession.name) private chatSessionModel: Model<ChatSessionDocument>,
+    @InjectModel(ChatFeedback.name) private chatFeedbackModel: Model<ChatFeedbackDocument>,
     @InjectModel(Document.name) private documentModel: Model<DocumentDocument>,
     @InjectModel(Category.name) private categoryModel: Model<CategoryDocument>,
     private configService: ConfigService,
@@ -180,7 +182,7 @@ export class AiChatService {
     return session.save();
   }
 
-  async sendMessage(sessionId: string | undefined, user: AuthenticatedUser, message: string, res: Response, clientSchema?: string) {
+  async sendMessage(sessionId: string | undefined, user: AuthenticatedUser, message: string, res: Response, clientSchema?: string, model?: string) {
     this.logger.log(`sendMessage user=${user.userId} session=${sessionId || 'new'}`);
     const session = await this.getOrCreateSession(sessionId, user);
 
@@ -217,6 +219,7 @@ export class AiChatService {
             content: m.content,
           })),
           ...(clientSchema ? { client_schema: clientSchema } : {}),
+          ...(model ? { model } : {}),
         }),
         signal: AbortSignal.timeout(300_000), // 5min for LLM streaming
       });
@@ -465,6 +468,142 @@ export class AiChatService {
         throw new HttpException('Failed to fetch clients', HttpStatus.BAD_GATEWAY);
       }
 
+      return await response.json();
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException('Orchestra gateway not reachable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // FEEDBACK — proxy to Orchestra
+  // ──────────────────────────────────────────────
+
+  async getConversationsForLearning() {
+    const sessions = await this.chatSessionModel
+      .find({ isActive: true })
+      .select('messages title')
+      .lean()
+      .exec();
+
+    // Extract user-assistant pairs
+    const pairs: Array<{ query: string; response: string; has_sources: boolean }> = [];
+    for (const session of sessions) {
+      const msgs = session.messages || [];
+      for (let i = 0; i < msgs.length - 1; i++) {
+        if (msgs[i].role === 'user' && msgs[i + 1]?.role === 'assistant') {
+          pairs.push({
+            query: msgs[i].content,
+            response: msgs[i + 1].content,
+            has_sources: (msgs[i + 1].sources || []).length > 0,
+          });
+        }
+      }
+    }
+
+    return { total_sessions: sessions.length, total_pairs: pairs.length, pairs };
+  }
+
+  async generateExperiences(token?: string) {
+    try {
+      const response = await fetch(`${this.orchestraUrl}/api/feedback/generate`, {
+        method: 'POST',
+        headers: { ...(token ? { 'access-token': token } : {}) },
+        signal: AbortSignal.timeout(300_000),
+      });
+
+      if (!response.ok) {
+        throw new HttpException('Failed to generate experiences', HttpStatus.BAD_GATEWAY);
+      }
+
+      return await response.json();
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException('Orchestra gateway not reachable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  async submitFeedback(body: { query: string; intent: string; rating: string; feedback?: string }) {
+    try {
+      const response = await fetch(`${this.orchestraUrl}/api/feedback`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!response.ok) {
+        throw new HttpException('Failed to submit feedback', HttpStatus.BAD_GATEWAY);
+      }
+
+      return await response.json();
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException('Orchestra gateway not reachable', HttpStatus.SERVICE_UNAVAILABLE);
+    }
+  }
+
+  async saveFeedback(
+    user: AuthenticatedUser,
+    body: {
+      sessionId: string;
+      query: string;
+      response: string;
+      intent: string;
+      rating: string;
+      feedback?: string;
+      model?: string;
+    },
+  ) {
+    const doc = new this.chatFeedbackModel({
+      userId: user.userId,
+      sessionId: body.sessionId,
+      query: body.query,
+      response: body.response,
+      intent: body.intent,
+      rating: body.rating,
+      feedback: body.feedback || '',
+      model: body.model || 'ollama',
+    });
+    await doc.save();
+
+    // Also forward to Orchestra experience store for learning
+    try {
+      await this.submitFeedback({
+        query: body.query,
+        intent: body.intent,
+        rating: body.rating,
+        feedback: body.feedback || '',
+      });
+    } catch {
+      this.logger.warn('Failed to forward feedback to Orchestra experience store');
+    }
+
+    return { message: 'Feedback saved', id: (doc as any)._id.toString() };
+  }
+
+  async getFeedbackStats() {
+    const total = await this.chatFeedbackModel.countDocuments();
+    const good = await this.chatFeedbackModel.countDocuments({ rating: 'good' });
+    const bad = await this.chatFeedbackModel.countDocuments({ rating: 'bad' });
+    const recent = await this.chatFeedbackModel
+      .find()
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean()
+      .exec();
+
+    return { total, good, bad, recent };
+  }
+
+  async getMonitoringDashboard() {
+    try {
+      const response = await fetch(`${this.orchestraUrl}/api/monitoring/dashboard`, {
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!response.ok) {
+        throw new HttpException('Failed to fetch monitoring data', HttpStatus.BAD_GATEWAY);
+      }
       return await response.json();
     } catch (error) {
       if (error instanceof HttpException) throw error;

@@ -19,4 +19,8 @@ export class SendMessageDto {
   @IsOptional()
   @IsString()
   client_schema?: string;
+
+  @IsOptional()
+  @IsString()
+  model?: string;  // LLM provider: "ollama" or "claude"
 }

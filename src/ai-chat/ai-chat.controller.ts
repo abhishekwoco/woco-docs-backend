@@ -79,6 +79,7 @@ export class AiChatController {
       dto.message,
       res,
       dto.client_schema,
+      dto.model,
     );
   }
 
@@ -123,5 +124,42 @@ export class AiChatController {
   @Get('db/clients')
   getDbClients(@Req() req: AuthenticatedRequest) {
     return this.aiChatService.getDbClients(req.user.token);
+  }
+
+  // ──────────────────────────────────────────────
+  // FEEDBACK — User rates responses for learning
+  // ──────────────────────────────────────────────
+
+  @Post('feedback')
+  submitFeedback(@Body() body: { query: string; intent: string; rating: string; feedback?: string }) {
+    return this.aiChatService.submitFeedback(body);
+  }
+
+  @Post('user-feedback')
+  saveUserFeedback(
+    @Req() req: AuthenticatedRequest,
+    @Body() body: { sessionId: string; query: string; response: string; intent: string; rating: string; feedback?: string; model?: string },
+  ) {
+    return this.aiChatService.saveFeedback(req.user, body);
+  }
+
+  @Get('user-feedback/stats')
+  getFeedbackStats() {
+    return this.aiChatService.getFeedbackStats();
+  }
+
+  @Post('feedback/generate')
+  generateExperiences(@Req() req: AuthenticatedRequest) {
+    return this.aiChatService.generateExperiences(req.user.token);
+  }
+
+  @Get('conversations/feed')
+  getConversationsForLearning() {
+    return this.aiChatService.getConversationsForLearning();
+  }
+
+  @Get('monitoring/dashboard')
+  getMonitoringDashboard() {
+    return this.aiChatService.getMonitoringDashboard();
   }
 }
