@@ -36,9 +36,9 @@ export class Category {
 
 export const CategorySchema = SchemaFactory.createForClass(Category);
 
-// Create indexes for better query performance
-// Note: slug index is already created by unique: true
-CategorySchema.index({ name: 1, parentId: 1 }, { unique: true });
+// Indexes for query performance
+// slug uniqueness is enforced by unique: true on the field above
+// name is intentionally NOT unique — same name allowed across different categories/personas
 CategorySchema.index({ parentId: 1 });
 CategorySchema.index({ order: 1 });
 CategorySchema.index({ persona: 1 });
