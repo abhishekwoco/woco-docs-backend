@@ -9,7 +9,10 @@ import { DatabaseModule } from './database/database.module';
 import { UsersModule } from './users/users.module';
 import { DocumentsModule } from './documents/documents.module';
 import { CategoriesModule } from './categories/categories.module';
-import { AiChatModule } from './ai-chat/ai-chat.module';
+import { ChatModule } from './chat/chat.module';
+import { RagModule } from './rag/rag.module';
+import { SchemaModule } from './schema/schema.module';
+import { ExperienceModule } from './experience/experience.module';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 @Module({
@@ -18,13 +21,13 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     ThrottlerModule.forRoot([
       {
         name: 'short',
-        ttl: 1000,   // 1 second
-        limit: 5,     // 5 requests per second
+        ttl: 1000,
+        limit: 20,
       },
       {
         name: 'medium',
-        ttl: 60000,  // 1 minute
-        limit: 100,   // 100 requests per minute
+        ttl: 60000,
+        limit: 100,
       },
     ]),
     DatabaseModule,
@@ -32,7 +35,10 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     UsersModule,
     DocumentsModule,
     CategoriesModule,
-    AiChatModule,
+    ChatModule,
+    RagModule,
+    SchemaModule,
+    ExperienceModule,
   ],
   controllers: [AppController],
   providers: [

@@ -1,12 +1,5 @@
 import { IsString, IsOptional, MaxLength } from 'class-validator';
 
-export class CreateChatSessionDto {
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  title?: string;
-}
-
 export class SendMessageDto {
   @IsOptional()
   @IsString()
@@ -18,9 +11,5 @@ export class SendMessageDto {
 
   @IsOptional()
   @IsString()
-  client_schema?: string;
-
-  @IsOptional()
-  @IsString()
-  model?: string;  // LLM provider: "ollama" or "claude"
+  model?: string;
 }
