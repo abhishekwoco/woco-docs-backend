@@ -92,6 +92,9 @@ export class ChatController {
       content: m.content,
     }));
 
+    // Load current session state (agent scratchpad) to pass to orchestra
+    const currentState = await this.chatService.getState(sessionId);
+
     try {
       const response = await fetch(`${this.orchestraUrl}/api/chat`, {
         method: 'POST',
@@ -99,6 +102,7 @@ export class ChatController {
         body: JSON.stringify({
           message: dto.message,
           history,
+          state: currentState,
           ...(dto.model ? { model: dto.model } : {}),
           roles,
         }),
@@ -122,18 +126,34 @@ export class ChatController {
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
-        res.write(chunk);
 
-        // Collect token content so we can persist the full response
-        for (const line of chunk.split('\n')) {
-          if (!line.startsWith('data: ')) continue;
+        // Intercept state_update events — persist to DB, do NOT forward to frontend
+        const lines = chunk.split('\n');
+        const forwardLines: string[] = [];
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) {
+            forwardLines.push(line);
+            continue;
+          }
           try {
             const ev = JSON.parse(line.slice(6));
-            if (ev.type === 'token') fullAnswer += ev.content;
+            if (ev.type === 'state_update' && ev.state) {
+              // Persist state updates to MongoDB without forwarding to the browser
+              this.chatService.updateState(sessionId, ev.state).catch((err) =>
+                this.logger.warn(`State update failed: ${err.message}`),
+              );
+            } else {
+              forwardLines.push(line);
+              if (ev.type === 'token') fullAnswer += ev.content;
+            }
           } catch {
-            // skip malformed
+            forwardLines.push(line);
           }
         }
+
+        const forwardChunk = forwardLines.join('\n');
+        if (forwardChunk.trim()) res.write(forwardChunk);
       }
 
       // Persist assistant response and set session title from first message

@@ -82,4 +82,35 @@ export class ChatService {
       await this.sessionModel.findByIdAndUpdate(sessionId, { title }).exec();
     }
   }
+
+  /**
+   * Return the agent scratchpad state for a session.
+   * Returns {} if the session has no state yet.
+   */
+  async getState(sessionId: string): Promise<Record<string, any>> {
+    const session = await this.sessionModel
+      .findById(sessionId)
+      .select('state')
+      .lean()
+      .exec();
+    return (session as any)?.state ?? {};
+  }
+
+  /**
+   * Deep-merge incoming state fields into the existing session state.
+   * Only the keys present in `updates` are changed — others are preserved.
+   */
+  async updateState(sessionId: string, updates: Record<string, any>): Promise<void> {
+    if (!updates || Object.keys(updates).length === 0) return;
+
+    // Build $set payload with dot-notation keys to avoid overwriting the whole state
+    const setPayload: Record<string, any> = {};
+    for (const [key, value] of Object.entries(updates)) {
+      setPayload[`state.${key}`] = value;
+    }
+
+    await this.sessionModel
+      .findByIdAndUpdate(sessionId, { $set: setPayload })
+      .exec();
+  }
 }
