@@ -23,6 +23,10 @@ export class ExperienceController {
   @Get('stats/count')
   stats() { return this.experienceService.stats(); }
 
+  @Post('repair')
+  @HttpCode(HttpStatus.OK)
+  repair() { return this.experienceService.repair(); }
+
   @Get(':id')
   getOne(@Param('id') id: string) { return this.experienceService.getOne(id); }
 

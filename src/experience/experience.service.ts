@@ -38,6 +38,7 @@ export class ExperienceService {
 
   list(offset = 0, limit = 50)      { return this.proxy(`?offset=${offset}&limit=${limit}`, 'GET'); }
   stats()                            { return this.proxy('/stats/count', 'GET'); }
+  repair()                           { return this.proxy('/repair', 'POST'); }
   getOne(id: string)                 { return this.proxy(`/${id}`, 'GET'); }
   create(body: unknown)              { return this.proxy('', 'POST', body); }
   update(id: string, body: unknown)  { return this.proxy(`/${id}`, 'PUT', body); }
