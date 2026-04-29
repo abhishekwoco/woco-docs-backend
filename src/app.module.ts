@@ -13,6 +13,9 @@ import { ChatModule } from './chat/chat.module';
 import { RagModule } from './rag/rag.module';
 import { SchemaModule } from './schema/schema.module';
 import { ExperienceModule } from './experience/experience.module';
+import { IntegrationsModule } from './integrations/integrations.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
+import { ObsidianModule } from './obsidian/obsidian.module';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 @Module({
@@ -39,6 +42,9 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     RagModule,
     SchemaModule,
     ExperienceModule,
+    IntegrationsModule,
+    MonitoringModule,
+    ObsidianModule,
   ],
   controllers: [AppController],
   providers: [
