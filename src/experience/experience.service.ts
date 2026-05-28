@@ -1,12 +1,16 @@
 import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { IntegrationsService } from '../integrations/integrations.service';
 
 @Injectable()
 export class ExperienceService {
   private readonly logger = new Logger(ExperienceService.name);
   private readonly orchestraUrl: string;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly integrations: IntegrationsService,
+  ) {
     this.orchestraUrl = this.config.get<string>('ORCHESTRA_URL', 'http://localhost:8001');
   }
 
@@ -14,15 +18,20 @@ export class ExperienceService {
     path: string,
     method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     body?: unknown,
+    extraHeaders?: Record<string, string>,
+    timeoutMs = 30_000,
   ): Promise<unknown> {
     const url = `${this.orchestraUrl}/experience${path}`;
+    const headers: Record<string, string> = { ...(extraHeaders ?? {}) };
+    if (body) headers['Content-Type'] = 'application/json';
+
     let res: Response;
     try {
       res = await fetch(url, {
         method,
-        headers: body ? { 'Content-Type': 'application/json' } : {},
+        headers,
         body: body ? JSON.stringify(body) : undefined,
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (err) {
       this.logger.error(`Orchestra experience${path} failed: ${err}`);
@@ -43,4 +52,35 @@ export class ExperienceService {
   create(body: unknown)              { return this.proxy('', 'POST', body); }
   update(id: string, body: unknown)  { return this.proxy(`/${id}`, 'PUT', body); }
   remove(id: string)                 { return this.proxy(`/${id}`, 'DELETE'); }
+
+  /**
+   * Trigger the Obsidian → Experience importer in Orchestra.
+   *
+   * We resolve the Obsidian credentials from MongoDB (encrypted at rest via
+   * IntegrationsService), forward them as X-Obsidian-Url / X-Obsidian-Key
+   * headers to Orchestra, and stream the result back when it finishes.
+   *
+   * Long timeout (10 minutes) — one LLM extraction call per markdown file
+   * in the vault, and a typical Woco vault has a few dozen.  At ~5s per
+   * extraction, that's a few minutes wall-clock.
+   */
+  async importFromObsidian(body: unknown): Promise<unknown> {
+    const creds = await this.integrations.resolveObsidianCredentials();
+    if (!creds) {
+      throw new HttpException(
+        'Obsidian integration not configured — set credentials under Settings on the Obsidian admin page.',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return this.proxy(
+      '/import-from-obsidian',
+      'POST',
+      body ?? {},
+      {
+        'X-Obsidian-Url': creds.baseUrl,
+        'X-Obsidian-Key': creds.apiKey,
+      },
+      600_000,
+    );
+  }
 }

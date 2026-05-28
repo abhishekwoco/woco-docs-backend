@@ -27,6 +27,17 @@ export class ExperienceController {
   @HttpCode(HttpStatus.OK)
   repair() { return this.experienceService.repair(); }
 
+  /**
+   * Walk the Obsidian vault, run LLM extraction on every doc, and seed the
+   * experience store with the extracted concept→domain entries.  Long-running
+   * (one LLM call per markdown file).  Returns import statistics.
+   */
+  @Post('import-from-obsidian')
+  @HttpCode(HttpStatus.OK)
+  importFromObsidian(@Body() body: unknown) {
+    return this.experienceService.importFromObsidian(body);
+  }
+
   @Get(':id')
   getOne(@Param('id') id: string) { return this.experienceService.getOne(id); }
 
