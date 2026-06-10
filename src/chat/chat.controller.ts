@@ -4,6 +4,7 @@ import {
   Get,
   Body,
   Param,
+  Query,
   Req,
   Res,
   UseGuards,
@@ -55,6 +56,111 @@ export class ChatController {
   }
 
   // ──────────────────────────────────────────────
+  // MODEL CATALOG (for the chat service/model picker)
+  // ──────────────────────────────────────────────
+
+  @Get('models')
+  async models(@Query('service') service = 'ollama_cloud') {
+    try {
+      const res = await fetch(
+        `${this.orchestraUrl}/api/chat/models?service=${encodeURIComponent(service)}`,
+        { signal: AbortSignal.timeout(20_000) },
+      );
+      if (!res.ok) return { service, models: [] };
+      return await res.json();
+    } catch (err) {
+      this.logger.error(`Model list fetch failed: ${(err as Error).message}`);
+      return { service, models: [] };
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // ANSWER FEEDBACK (👍 / 👎)
+  // ──────────────────────────────────────────────
+
+  @Post('feedback')
+  saveFeedback(
+    @Req() req: any,
+    @Body()
+    body: {
+      session_id?: string;
+      rating: 'up' | 'down';
+      question: string;
+      answer: string;
+      comment?: string;
+    },
+  ) {
+    if (body?.rating !== 'up' && body?.rating !== 'down') {
+      return { saved: false, error: 'rating must be "up" or "down"' };
+    }
+    if (!body.question || !body.answer) {
+      return { saved: false, error: 'question and answer are required' };
+    }
+    return this.chatService
+      .saveFeedback(req.user.userId, body)
+      .then((r) => ({ saved: true, ...r }));
+  }
+
+  @Get('feedback')
+  listFeedback(
+    @Req() req: any,
+    @Query('rating') rating?: 'up' | 'down',
+    @Query('limit') limit = '50',
+  ) {
+    // Review feed is admin-only; regular users can only submit.
+    if (!req.user?.admin) {
+      return { items: [], counts: { up: 0, down: 0 } };
+    }
+    return this.chatService.listFeedback(rating, Number(limit));
+  }
+
+  // ──────────────────────────────────────────────
+  // CONTEXT COMPRESSION (separate event, not on the send path)
+  // ──────────────────────────────────────────────
+
+  @SkipThrottle()
+  @Post('compress')
+  async compress(
+    @Req() req: any,
+    @Body() body: { session_id: string; keep_recent?: number },
+  ) {
+    const userId = req.user.userId;
+    const messages = await this.chatService.getMessagesForCompression(
+      body.session_id,
+      userId,
+    );
+
+    let result: any;
+    try {
+      const response = await fetch(`${this.orchestraUrl}/api/chat/compress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages,
+          keep_recent: body.keep_recent ?? 4,
+        }),
+        // Summarisation is one LLM call — give it a generous budget.
+        signal: AbortSignal.timeout(180_000),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        this.logger.error(`Orchestra compress returned ${response.status}: ${text}`);
+        return { compressed: false, error: 'Compression service error' };
+      }
+      result = await response.json();
+    } catch (err) {
+      this.logger.error(`Compression request failed: ${(err as Error).message}`);
+      return { compressed: false, error: 'Failed to reach compression service' };
+    }
+
+    // Persist the rewritten history so future turns ride on the smaller context.
+    if (result?.compressed && Array.isArray(result.messages)) {
+      await this.chatService.replaceMessages(body.session_id, userId, result.messages);
+    }
+    return result;
+  }
+
+  // ──────────────────────────────────────────────
   // CHAT — SSE stream
   // ──────────────────────────────────────────────
 
@@ -86,11 +192,17 @@ export class ChatController {
     // First event: tell the frontend which session this belongs to
     res.write(`data: ${JSON.stringify({ type: 'session', session_id: sessionId })}\n\n`);
 
-    // Build history from DB (last 10 exchanges before the current message)
-    const history = session.messages.slice(-10).map((m) => ({
-      role: m.role,
-      content: m.content,
-    }));
+    // Build history from DB.  Always retain the latest compression summary (if
+    // any) plus the last 10 real turns — so a compressed session keeps its
+    // summary even as new turns push past the 10-message window.
+    const SUMMARY_MARKER = '[Compressed summary of earlier conversation]';
+    const isSummary = (c: string) => typeof c === 'string' && c.startsWith(SUMMARY_MARKER);
+    const summaries = session.messages.filter((m) => isSummary(m.content));
+    const realTurns = session.messages.filter((m) => !isSummary(m.content));
+    const history = [
+      ...summaries.slice(-1), // keep only the most recent summary
+      ...realTurns.slice(-10), // last 10 real exchanges
+    ].map((m) => ({ role: m.role, content: m.content }));
 
     // Load current session state (agent scratchpad) to pass to orchestra
     const currentState = await this.chatService.getState(sessionId);
@@ -98,11 +210,17 @@ export class ChatController {
     try {
       const response = await fetch(`${this.orchestraUrl}/api/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          // Per-user rate limiting in Orchestra — all proxied traffic shares
+          // this server's IP, so the limiter keys on the user id instead.
+          'X-User-Id': String(userId),
+        },
         body: JSON.stringify({
           message: dto.message,
           history,
           state: currentState,
+          ...(dto.service ? { service: dto.service } : {}),
           ...(dto.model ? { model: dto.model } : {}),
           roles,
         }),

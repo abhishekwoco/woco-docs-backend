@@ -3,6 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { ChatController } from './chat.controller';
 import { ChatService } from './chat.service';
 import { ChatSession, ChatSessionSchema } from './schemas/chat-session.schema';
+import { ChatFeedback, ChatFeedbackSchema } from './schemas/chat-feedback.schema';
 import { AuthModule } from '../auth/auth.module';
 import { TokenAuthGuard } from '../documents/guards/token-auth.guard';
 
@@ -11,6 +12,7 @@ import { TokenAuthGuard } from '../documents/guards/token-auth.guard';
     AuthModule,
     MongooseModule.forFeature([
       { name: ChatSession.name, schema: ChatSessionSchema },
+      { name: ChatFeedback.name, schema: ChatFeedbackSchema },
     ]),
   ],
   controllers: [ChatController],

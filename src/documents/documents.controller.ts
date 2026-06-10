@@ -9,6 +9,8 @@ import {
 import { DocumentsService } from './documents.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
+import { ReorderDocumentsDto } from './dto/reorder-documents.dto';
+import { DeleteDocumentDto } from './dto/delete-document.dto';
 import { TokenAuthGuard } from './guards/token-auth.guard';
 import { WritePermissionGuard } from './guards/write-permission.guard';
 
@@ -80,14 +82,13 @@ export class DocumentsController {
 
   @Post('reorder')
   @UseGuards(WritePermissionGuard)
-  reorder(@Body() reorderDto: { documents: Array<{ id: string; order: number }> }) {
+  reorder(@Body() reorderDto: ReorderDocumentsDto) {
     return this.documentsService.reorderDocuments(reorderDto.documents);
   }
 
   @Post('delete')
   @UseGuards(WritePermissionGuard)
-  remove(@Body() deleteDocumentDto: { document_id: string }) {
-    const { document_id } = deleteDocumentDto;
-    return this.documentsService.remove(document_id);
+  remove(@Body() deleteDocumentDto: DeleteDocumentDto) {
+    return this.documentsService.remove(deleteDocumentDto.document_id);
   }
 }

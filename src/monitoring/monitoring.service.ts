@@ -44,4 +44,8 @@ export class MonitoringService {
     return this.proxy(`/turns/recent?limit=${safe}`, 10_000);
   }
   llm()                             { return this.proxy('/llm', 5_000); }
+  unanswered(limit: number)         {
+    const safe = Math.max(1, Math.min(Number(limit) || 50, 200));
+    return this.proxy(`/unanswered?limit=${safe}`, 10_000);
+  }
 }

@@ -28,13 +28,11 @@ export class ObsidianService {
   private async buildHeaders(): Promise<Record<string, string> | null> {
     const creds = await this.integrations.resolveObsidianCredentials();
     if (!creds) return null;
-    // Diagnostic: log key length + first/last 2 chars (masked) so we can confirm
-    // decryption produced the right length without leaking the secret to logs.
-    const k = creds.apiKey;
-    const mask = k.length <= 4
-      ? '(too short)'
-      : `${k.slice(0, 2)}…${k.slice(-2)} (len=${k.length})`;
-    this.logger.log(`Obsidian request: url=${creds.baseUrl} key=${mask}`);
+    // Log only the non-sensitive base URL. We previously logged a partial
+    // mask of the decrypted key (first/last 2 chars + length) on every
+    // request — that leaks meaningful information about the secret into logs
+    // and runs on the hot path. Removed.
+    this.logger.log(`Obsidian request: url=${creds.baseUrl}`);
     return {
       'X-Obsidian-Url': creds.baseUrl,
       'X-Obsidian-Key': creds.apiKey,

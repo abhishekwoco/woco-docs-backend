@@ -9,6 +9,13 @@ export class SendMessageDto {
   @MaxLength(5000)
   message: string;
 
+  // Chat provider selection — forwarded to Orchestra.
+  //   service: "ollama_cloud" | "ollama_local" | "claude"
+  //   model:   model tag for that service
+  @IsOptional()
+  @IsString()
+  service?: string;
+
   @IsOptional()
   @IsString()
   model?: string;

@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { ChatSession, ChatSessionDocument } from './schemas/chat-session.schema';
+import { ChatFeedback, ChatFeedbackDocument } from './schemas/chat-feedback.schema';
 
 @Injectable()
 export class ChatService {
@@ -10,7 +11,50 @@ export class ChatService {
   constructor(
     @InjectModel(ChatSession.name)
     private readonly sessionModel: Model<ChatSessionDocument>,
+    @InjectModel(ChatFeedback.name)
+    private readonly feedbackModel: Model<ChatFeedbackDocument>,
   ) {}
+
+  // ── Answer feedback ───────────────────────────────────────────────────────
+
+  /** Record a 👍/👎 vote on an assistant answer (question+answer snapshotted). */
+  async saveFeedback(
+    userId: string,
+    body: {
+      session_id?: string;
+      rating: 'up' | 'down';
+      question: string;
+      answer: string;
+      comment?: string;
+    },
+  ): Promise<{ id: string }> {
+    const doc = await this.feedbackModel.create({
+      userId,
+      sessionId: body.session_id || undefined,
+      rating: body.rating,
+      question: (body.question || '').slice(0, 2000),
+      answer: (body.answer || '').slice(0, 8000),
+      comment: (body.comment || '').slice(0, 1000),
+    });
+    return { id: (doc as any)._id.toString() };
+  }
+
+  /** Admin review feed — newest first, optional rating filter. */
+  async listFeedback(rating?: 'up' | 'down', limit = 50) {
+    const q: Record<string, unknown> = {};
+    if (rating) q.rating = rating;
+    const items = await this.feedbackModel
+      .find(q)
+      .sort({ createdAt: -1 })
+      .limit(Math.min(limit, 200))
+      .lean()
+      .exec();
+    const [up, down] = await Promise.all([
+      this.feedbackModel.countDocuments({ rating: 'up' }),
+      this.feedbackModel.countDocuments({ rating: 'down' }),
+    ]);
+    return { items, counts: { up, down } };
+  }
 
   async createSession(userId: string): Promise<ChatSessionDocument> {
     const session = new this.sessionModel({ userId, title: 'New Chat', messages: [] });
@@ -81,6 +125,42 @@ export class ChatService {
           : firstMessage;
       await this.sessionModel.findByIdAndUpdate(sessionId, { title }).exec();
     }
+  }
+
+  /**
+   * Return the full message list for a session (for compression).
+   * Verifies ownership.
+   */
+  async getMessagesForCompression(
+    sessionId: string,
+    userId: string,
+  ): Promise<{ role: string; content: string }[]> {
+    const session = await this.getSessionById(sessionId, userId);
+    return session.messages.map((m) => ({ role: m.role, content: m.content }));
+  }
+
+  /**
+   * Replace a session's entire message list (used after a compression event,
+   * which rewrites the history to [summary, ...recent turns]).  Verifies
+   * ownership.
+   */
+  async replaceMessages(
+    sessionId: string,
+    userId: string,
+    messages: { role: string; content: string }[],
+  ): Promise<void> {
+    const stamped = messages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      timestamp: new Date(),
+    }));
+    const result = await this.sessionModel
+      .findOneAndUpdate(
+        { _id: sessionId, userId, isActive: true },
+        { $set: { messages: stamped } },
+      )
+      .exec();
+    if (!result) throw new NotFoundException('Chat session not found');
   }
 
   /**

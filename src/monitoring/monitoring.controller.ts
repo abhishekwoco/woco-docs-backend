@@ -51,4 +51,9 @@ export class MonitoringController {
   llm() {
     return this.monitoring.llm();
   }
+
+  @Get('unanswered')
+  unanswered(@Query('limit') limit = '50') {
+    return this.monitoring.unanswered(Number(limit));
+  }
 }
