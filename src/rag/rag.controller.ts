@@ -67,6 +67,11 @@ export class RagController {
     return this.ragService.getSchema();
   }
 
+  @Get('indexed')
+  async getIndexed() {
+    return this.ragService.getIndexed();
+  }
+
   @Get('integrity')
   async getIntegrity() {
     return this.ragService.getIntegrity();
