@@ -131,7 +131,17 @@ export class RagService {
       throw new HttpException(text || 'Upstream error', res.status);
     }
 
-    return res.json();
+    // Orchestra returns HTTP 200 with `success: false` for soft failures
+    // (e.g. empty content, chunker produced nothing). Surface those as real
+    // failures so a bulk run reports them honestly instead of silently
+    // counting an un-indexed doc as "succeeded".
+    const result = (await res.json()) as { success?: boolean; message?: string };
+    if (result && result.success === false) {
+      this.logger.warn(`Orchestra ingest/document soft-failed for ${docId}: ${result.message}`);
+      throw new HttpException(result.message || 'Ingestion produced no chunks', HttpStatus.UNPROCESSABLE_ENTITY);
+    }
+
+    return result;
   }
 
   async bulkIngest(dto: BulkIngestDto): Promise<{ results: unknown[]; total: number; succeeded: number; failed: number }> {
@@ -188,6 +198,26 @@ export class RagService {
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       this.logger.error(`Orchestra schema returned ${res.status}: ${text}`);
+      throw new HttpException(text || 'Upstream error', res.status);
+    }
+
+    return res.json();
+  }
+
+  async getIndexed(): Promise<unknown> {
+    const url = `${this.orchestraUrl}/api/rag/indexed`;
+
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    } catch (err) {
+      this.logger.error(`Orchestra indexed request failed: ${err}`);
+      throw new HttpException('Orchestra service unreachable', HttpStatus.BAD_GATEWAY);
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      this.logger.error(`Orchestra indexed returned ${res.status}: ${text}`);
       throw new HttpException(text || 'Upstream error', res.status);
     }
 
