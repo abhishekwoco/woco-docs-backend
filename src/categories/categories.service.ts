@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Category, CategoryDocument } from './schemas/category.schema';
 import { CreateCategoryDto } from './dto/create-category.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
@@ -56,6 +56,9 @@ export class CategoriesService {
   }
 
   async findOne(id: string): Promise<Category | null> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new NotFoundException('Category not found');
+    }
     const category = await this.categoryModel.findById(id).exec();
     if (!category) {
       throw new NotFoundException('Category not found');
@@ -79,6 +82,9 @@ export class CategoriesService {
   }
 
   async findSubcategories(parentId: string): Promise<CategoryDocument[]> {
+    if (!Types.ObjectId.isValid(parentId)) {
+      throw new NotFoundException('Category not found');
+    }
     return this.categoryModel
       .find({ parentId })
       .sort({ order: 1 })
@@ -266,6 +272,14 @@ export class CategoriesService {
       );
     }
 
+    // Block deletion while documents still reference this category.
+    const docCount = await this.getDocumentCount(id);
+    if (docCount > 0) {
+      throw new BadRequestException(
+        `Cannot delete: ${docCount} document(s) are still assigned to this category. Reassign or remove them first.`
+      );
+    }
+
     const deletedCategory = await this.categoryModel.findByIdAndDelete(id).exec();
     if (!deletedCategory) {
       throw new NotFoundException('Category not found');
@@ -275,6 +289,16 @@ export class CategoriesService {
   }
 
   async reorderCategories(categoryOrders: Array<{ id: string; order: number }>): Promise<void> {
+    // This endpoint reorders a set of siblings in one batch, so the real risk is
+    // two entries claiming the same order value within the submitted request.
+    // Batch-internal uniqueness is the correct invariant here — calling the
+    // per-category validateOrderUniqueness in a loop would false-positive against
+    // the pre-update state.
+    const orders = categoryOrders.map((c) => c.order);
+    if (new Set(orders).size !== orders.length) {
+      throw new BadRequestException('Duplicate order values in reorder request');
+    }
+
     const updatePromises = categoryOrders.map(({ id, order }) =>
       this.categoryModel.findByIdAndUpdate(id, { order }).exec()
     );
@@ -282,7 +306,9 @@ export class CategoriesService {
   }
 
   private async checkCircularReference(categoryId: string, newParentId: string): Promise<boolean> {
-    let currentId = newParentId;
+    // Normalize every hop to a string — parent.parentId is an ObjectId, so
+    // comparisons and the visited set break if we don't coerce consistently.
+    let currentId: string | null = String(newParentId);
     const visited = new Set<string>();
 
     while (currentId) {
@@ -290,7 +316,7 @@ export class CategoriesService {
         return true; // Circular reference
       }
 
-      if (currentId === categoryId) {
+      if (String(currentId) === String(categoryId)) {
         return true; // Would create a circular reference
       }
 
@@ -301,7 +327,7 @@ export class CategoriesService {
         break;
       }
 
-      currentId = parent.parentId;
+      currentId = parent.parentId ? parent.parentId.toString() : null;
     }
 
     return false;
@@ -348,6 +374,9 @@ export class CategoriesService {
   }
 
   async getCategoryDocuments(categoryId: string): Promise<Document[]> {
+    if (!Types.ObjectId.isValid(categoryId)) {
+      throw new NotFoundException('Category not found');
+    }
     return this.documentModel
       .find({ categoryId })
       .populate('categoryId')
@@ -356,6 +385,9 @@ export class CategoriesService {
   }
 
   async getAvailableDocuments(categoryId: string): Promise<Document[]> {
+    if (!Types.ObjectId.isValid(categoryId)) {
+      throw new NotFoundException('Category not found');
+    }
     // Get all documents not assigned to this category
     return this.documentModel
       .find({ categoryId: { $ne: categoryId } })
@@ -389,23 +421,25 @@ export class CategoriesService {
   }
 
   async unassignDocumentFromCategory(documentId: string, newCategoryId?: string): Promise<Document> {
-    const updateData: any = {};
+    let update: any;
 
     if (newCategoryId) {
-      // Verify new category exists
+      // Reassign: verify the new category exists, then point the doc at it.
       const category = await this.categoryModel.findById(newCategoryId).exec();
       if (!category) {
         throw new NotFoundException('New category not found');
       }
-      updateData.categoryId = newCategoryId;
+      update = { $set: { categoryId: newCategoryId } };
     } else {
-      throw new BadRequestException('Document must be assigned to a category');
+      // Plain unassign: clear the category reference (schema treats a missing
+      // categoryId as "no category").
+      update = { $unset: { categoryId: '' } };
     }
 
     const document = await this.documentModel
       .findByIdAndUpdate(
         documentId,
-        updateData,
+        update,
         { new: true }
       )
       .populate('categoryId')

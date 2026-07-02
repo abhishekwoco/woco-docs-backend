@@ -1,6 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { ChatSession, ChatSessionDocument } from './schemas/chat-session.schema';
 import { ChatFeedback, ChatFeedbackDocument } from './schemas/chat-feedback.schema';
 
@@ -72,6 +77,10 @@ export class ChatService {
   }
 
   async getSessionById(sessionId: string, userId: string): Promise<ChatSessionDocument> {
+    // A malformed (non-ObjectId) id is a not-found, not a server error.
+    if (!Types.ObjectId.isValid(sessionId)) {
+      throw new NotFoundException('Chat session not found');
+    }
     const session = await this.sessionModel
       .findOne({ _id: sessionId, userId, isActive: true })
       .exec();
@@ -80,10 +89,37 @@ export class ChatService {
   }
 
   async deleteSession(sessionId: string, userId: string): Promise<void> {
+    // A malformed (non-ObjectId) id is a not-found, not a server error.
+    if (!Types.ObjectId.isValid(sessionId)) {
+      throw new NotFoundException('Chat session not found');
+    }
     const result = await this.sessionModel
       .findOneAndUpdate({ _id: sessionId, userId }, { isActive: false })
       .exec();
     if (!result) throw new NotFoundException('Chat session not found');
+  }
+
+  async renameSession(
+    sessionId: string,
+    userId: string,
+    title: string,
+  ): Promise<{ _id: string; title: string }> {
+    // A malformed (non-ObjectId) id is a not-found, not a server error.
+    if (!Types.ObjectId.isValid(sessionId)) {
+      throw new NotFoundException('Chat session not found');
+    }
+    const trimmed = (title || '').trim();
+    if (!trimmed) throw new BadRequestException('Title required');
+    const clamped = trimmed.slice(0, 120);
+    const result = await this.sessionModel
+      .findOneAndUpdate(
+        { _id: sessionId, userId },
+        { $set: { title: clamped } },
+        { new: true },
+      )
+      .exec();
+    if (!result) throw new NotFoundException('Chat session not found');
+    return { _id: (result as any)._id.toString(), title: result.title };
   }
 
   async findOrCreateSession(
@@ -91,6 +127,10 @@ export class ChatService {
     userId: string,
   ): Promise<ChatSessionDocument> {
     if (!sessionId) return this.createSession(userId);
+
+    // A malformed (non-ObjectId) id can't match anything — start fresh instead
+    // of throwing a 500 on the cast failure.
+    if (!Types.ObjectId.isValid(sessionId)) return this.createSession(userId);
 
     const session = await this.sessionModel
       .findOne({ _id: sessionId, userId, isActive: true })

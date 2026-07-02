@@ -1,9 +1,21 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
+import { join } from 'path';
+import { mkdirSync } from 'fs';
 import { AppModule } from './app.module';
+import { UPLOADS_DIR } from './uploads/uploads.constants';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+
+  // ── Local file storage ──────────────────────────────────────────────────
+  // Uploaded images (and any other static assets) live on the host disk and
+  // are served at /uploads/*. The deployment is on an internal local machine,
+  // so using its own storage is intentional. Path is configurable via
+  // UPLOADS_DIR; defaults to <cwd>/uploads.
+  mkdirSync(join(UPLOADS_DIR, 'images'), { recursive: true });
+  app.useStaticAssets(UPLOADS_DIR, { prefix: '/uploads/' });
 
   // Enable global validation.
   //

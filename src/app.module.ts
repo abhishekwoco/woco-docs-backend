@@ -16,6 +16,8 @@ import { ExperienceModule } from './experience/experience.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { ObsidianModule } from './obsidian/obsidian.module';
+import { UploadsModule } from './uploads/uploads.module';
+import { SettingsModule } from './settings/settings.module';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 @Module({
@@ -45,6 +47,8 @@ import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
     IntegrationsModule,
     MonitoringModule,
     ObsidianModule,
+    UploadsModule,
+    SettingsModule,
   ],
   controllers: [AppController],
   providers: [
