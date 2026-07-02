@@ -5,7 +5,13 @@ import {
   Body,
   Query,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { MulterFile } from '../rag/types';
 import { DocumentsService } from './documents.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
@@ -23,6 +29,24 @@ export class DocumentsController {
   @UseGuards(WritePermissionGuard)
   create(@Body() createDocumentDto: CreateDocumentDto) {
     return this.documentsService.create(createDocumentDto);
+  }
+
+  /**
+   * POST /documents/upload-pdf — create a document from an uploaded PDF.
+   * Multipart: `file` (the PDF) + optional `categoryId` / `title` text fields.
+   */
+  @Post('upload-pdf')
+  @UseGuards(WritePermissionGuard)
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(FileInterceptor('file'))
+  uploadPdf(
+    @UploadedFile() file: MulterFile,
+    @Body() body: { categoryId?: string; title?: string },
+  ) {
+    return this.documentsService.createFromPdf(file, {
+      categoryId: body?.categoryId,
+      title: body?.title,
+    });
   }
 
   @Get()
@@ -78,6 +102,20 @@ export class DocumentsController {
   update(@Body() updateDocumentDto: UpdateDocumentDto) {
     const { document_id, ...updateData } = updateDocumentDto;
     return this.documentsService.update(document_id, updateData);
+  }
+
+  /**
+   * POST /documents/reformat — AI-reformat text into clean Markdown.
+   * Returns the proposed Markdown for the editor to review; saves nothing.
+   */
+  @Post('reformat')
+  @UseGuards(WritePermissionGuard)
+  @HttpCode(HttpStatus.OK)
+  reformat(@Body() body: { text: string; service?: string; model?: string }) {
+    return this.documentsService.reformat(body?.text, {
+      service: body?.service,
+      model: body?.model,
+    });
   }
 
   @Post('reorder')

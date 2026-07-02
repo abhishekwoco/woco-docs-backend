@@ -55,6 +55,18 @@ export class ChatController {
     return this.chatService.deleteSession(body.session_id, req.user.userId);
   }
 
+  @Post('sessions/rename')
+  renameSession(
+    @Req() req: any,
+    @Body() body: { session_id: string; title: string },
+  ) {
+    return this.chatService.renameSession(
+      body.session_id,
+      req.user.userId,
+      body.title,
+    );
+  }
+
   // ──────────────────────────────────────────────
   // MODEL CATALOG (for the chat service/model picker)
   // ──────────────────────────────────────────────
@@ -207,6 +219,20 @@ export class ChatController {
     // Load current session state (agent scratchpad) to pass to orchestra
     const currentState = await this.chatService.getState(sessionId);
 
+    let fullAnswer = '';
+    let streamFinished = false;
+    let clientGone = false;
+    // Manual AbortController so we can abort the upstream fetch either on the
+    // 300s timeout OR when the browser disconnects mid-stream.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 300_000);
+    res.on('close', () => {
+      if (!streamFinished) {
+        clientGone = true;
+        controller.abort();
+      }
+    });
+
     try {
       const response = await fetch(`${this.orchestraUrl}/api/chat`, {
         method: 'POST',
@@ -224,7 +250,7 @@ export class ChatController {
           ...(dto.model ? { model: dto.model } : {}),
           roles,
         }),
-        signal: AbortSignal.timeout(300_000),
+        signal: controller.signal,
       });
 
       if (!response.ok || !response.body) {
@@ -235,9 +261,32 @@ export class ChatController {
         return;
       }
 
-      let fullAnswer = '';
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
+      let sseBuffer = '';
+
+      // Process a single complete SSE line: intercept state_update, accumulate
+      // token content into fullAnswer, and collect everything else to forward.
+      const handleLine = (line: string, forwardLines: string[]) => {
+        if (!line.startsWith('data: ')) {
+          forwardLines.push(line);
+          return;
+        }
+        try {
+          const ev = JSON.parse(line.slice(6));
+          if (ev.type === 'state_update' && ev.state) {
+            // Persist state updates to MongoDB without forwarding to the browser
+            this.chatService.updateState(sessionId, ev.state).catch((err) =>
+              this.logger.warn(`State update failed: ${err.message}`),
+            );
+          } else {
+            forwardLines.push(line);
+            if (ev.type === 'token') fullAnswer += ev.content;
+          }
+        } catch {
+          forwardLines.push(line);
+        }
+      };
 
       while (true) {
         const { done, value } = await reader.read();
@@ -245,33 +294,29 @@ export class ChatController {
 
         const chunk = decoder.decode(value, { stream: true });
 
-        // Intercept state_update events — persist to DB, do NOT forward to frontend
-        const lines = chunk.split('\n');
-        const forwardLines: string[] = [];
+        // Buffer partial lines across reads: a chunk may split mid-line, so keep
+        // the last (possibly incomplete) element back until more data arrives.
+        sseBuffer += chunk;
+        const parts = sseBuffer.split('\n');
+        sseBuffer = parts.pop() ?? '';
 
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) {
-            forwardLines.push(line);
-            continue;
-          }
-          try {
-            const ev = JSON.parse(line.slice(6));
-            if (ev.type === 'state_update' && ev.state) {
-              // Persist state updates to MongoDB without forwarding to the browser
-              this.chatService.updateState(sessionId, ev.state).catch((err) =>
-                this.logger.warn(`State update failed: ${err.message}`),
-              );
-            } else {
-              forwardLines.push(line);
-              if (ev.type === 'token') fullAnswer += ev.content;
-            }
-          } catch {
-            forwardLines.push(line);
-          }
+        const forwardLines: string[] = [];
+        for (const line of parts) {
+          handleLine(line, forwardLines);
         }
 
-        const forwardChunk = forwardLines.join('\n');
-        if (forwardChunk.trim()) res.write(forwardChunk);
+        // Forward complete lines with their newline framing intact (blank-line
+        // delimiters must survive — do NOT trim).
+        if (forwardLines.length) res.write(forwardLines.join('\n') + '\n');
+      }
+
+      // Flush the decoder and process any leftover buffered line so a final
+      // unterminated event isn't lost.
+      sseBuffer += decoder.decode();
+      if (sseBuffer.length) {
+        const forwardLines: string[] = [];
+        handleLine(sseBuffer, forwardLines);
+        if (forwardLines.length) res.write(forwardLines.join('\n') + '\n');
       }
 
       // Persist assistant response and set session title from first message
@@ -280,13 +325,33 @@ export class ChatController {
         await this.chatService.setTitleFromFirstMessage(sessionId, dto.message);
       }
 
+      streamFinished = true;
       res.end();
     } catch (err) {
       this.logger.error(`Chat stream failed: ${(err as Error).message}`);
-      res.write(
-        `data: ${JSON.stringify({ type: 'error', content: 'Failed to connect to LLM' })}\n\n`,
-      );
-      res.end();
+      // Persist whatever we streamed so far so an interrupted answer isn't lost.
+      if (fullAnswer) {
+        try {
+          await this.chatService.appendMessage(
+            sessionId,
+            'assistant',
+            fullAnswer + '\n\n_(response was interrupted)_',
+          );
+          await this.chatService.setTitleFromFirstMessage(sessionId, dto.message);
+        } catch {
+          /* persistence failure must not crash the handler */
+        }
+      }
+      // If the client already disconnected there's nobody to receive an error
+      // event — just clean up.
+      if (!clientGone) {
+        res.write(
+          `data: ${JSON.stringify({ type: 'error', content: 'Failed to connect to LLM' })}\n\n`,
+        );
+        res.end();
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }
